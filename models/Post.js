@@ -3,11 +3,13 @@ const postsCollection = require("../db")
   .collection("posts");
 const ObjectID = require("mongodb").ObjectID;
 const User = require("./User");
+const sanitizeHTML = require("sanitize-html");
 
-let Post = function(data, userId) {
+let Post = function(data, userId, requestedPostId) {
   this.data = data;
   this.errors = [];
   this.userId = userId;
+  this.requestedPostId = requestedPostId;
 };
 
 Post.prototype.cleanUp = function() {
@@ -17,8 +19,14 @@ Post.prototype.cleanUp = function() {
   }
   //get rid of any bogus props
   this.data = {
-    title: this.data.title.trim(),
-    body: this.data.body.trim(),
+    title: sanitizeHTML(this.data.title.trim(), {
+      allowedTags: [],
+      allowedAttributes: []
+    }),
+    body: sanitizeHTML(this.data.body.trim(), {
+      allowedTags: [],
+      allowedAttributes: []
+    }),
     createdDate: new Date(),
     author: ObjectID(this.userId)
   };
@@ -40,9 +48,9 @@ Post.prototype.create = function() {
     if (!this.errors.length) {
       //Save post into database
       postsCollection
-        .insert(this.data)
-        .then(() => {
-          resolve();
+        .insertOne(this.data)
+        .then(doc => {
+          resolve(doc.ops[0]._id);
         })
         .catch(() => {
           this.errors.push("Please try again later.");
@@ -53,47 +61,124 @@ Post.prototype.create = function() {
     }
   });
 };
-
-Post.findSingleById = function(id) {
+Post.prototype.update = function() {
   return new Promise(async (resolve, reject) => {
-    if (typeof id != "string" || !ObjectID.isValid(id)) {
-      reject("");
-      return;
+    try {
+      let post = await Post.findSingleById(this.requestedPostId, this.userId);
+      if (post.isVisitorOwner) {
+        //update the db
+        let status = await this.actuallyUpdate();
+        resolve(status);
+      } else {
+        reject();
+      }
+    } catch {
+      reject();
     }
-    let posts = await postsCollection
-      .aggregate([
-        { $match: { _id: new ObjectID(id) } },
+  });
+};
+
+Post.prototype.actuallyUpdate = function() {
+  return new Promise(async (resolve, reject) => {
+    this.cleanUp();
+    this.validate();
+    if (!this.errors.length) {
+      await postsCollection.findOneAndUpdate(
         {
-          $lookup: {
-            from: "users",
-            localField: "author",
-            foreignField: "_id",
-            as: "authorDocument"
-          }
+          _id: new ObjectID(this.requestedPostId)
         },
         {
-          $project: {
-            title: 1,
-            body: 1,
-            createdDate: 1,
-            author: { $arrayElemAt: ["$authorDocument", 0] }
+          $set: {
+            title: this.data.title,
+            body: this.data.body
           }
         }
-      ])
-      .toArray();
+      );
+      resolve("success");
+    } else {
+      resolve("failure");
+    }
+  });
+};
+Post.reusablePostQuery = function(uniqueOperations, visitorId) {
+  console.log(visitorId + "<-reusuableQ");
+  return new Promise(async (resolve, reject) => {
+    let staticAgg = [
+      {
+        $lookup: {
+          from: "users",
+          localField: "author",
+          foreignField: "_id",
+          as: "authorDocument"
+        }
+      },
+      {
+        $project: {
+          title: 1,
+          body: 1,
+          createdDate: 1,
+          authorId: "$author",
+          author: { $arrayElemAt: ["$authorDocument", 0] }
+        }
+      }
+    ];
+    let aggOperations = uniqueOperations.concat(staticAgg);
+    let posts = await postsCollection.aggregate(aggOperations).toArray();
     //clean up author property in each post object
     posts = posts.map(post => {
+      post.isVisitorOwner = post.authorId.equals(visitorId);
+      // console.log(visitorId);
       post.author = {
         username: post.author.username,
         avatar: new User(post.author, true).avatar
       };
       return post;
     });
+    resolve(posts);
+  });
+};
+
+Post.findSingleById = function(id, visitorId) {
+  console.log(visitorId + "<-findsinglebyid");
+  return new Promise(async (resolve, reject) => {
+    if (typeof id != "string" || !ObjectID.isValid(id)) {
+      reject("");
+      return;
+    }
+    let posts = await Post.reusablePostQuery(
+      [{ $match: { _id: new ObjectID(id) } }],
+      visitorId
+    );
     if (posts.length) {
-      console.log(posts);
+      // console.log(posts);
       resolve(posts[0]);
     } else {
       reject("Something went wrong");
+    }
+  });
+};
+
+Post.findByAuthorId = authorId => {
+  return Post.reusablePostQuery([
+    { $match: { author: authorId } },
+    {
+      $sort: { createdDate: 1 }
+    }
+  ]);
+};
+
+Post.delete = function(postIdToDelete, currentUserId) {
+  return new Promise(async (resolve, reject) => {
+    try {
+      let post = await Post.findSingleById(postIdToDelete, currentUserId);
+      if(post.isVisitorOwner){
+        await postsCollection.deleteOne({_id: new ObjectID(postIdToDelete)})
+        resolve()
+      }else{
+        reject()
+      }
+    } catch {
+      reject()
     }
   });
 };
