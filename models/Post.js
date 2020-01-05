@@ -127,6 +127,7 @@ Post.reusablePostQuery = function(uniqueOperations, visitorId) {
     //clean up author property in each post object
     posts = posts.map(post => {
       post.isVisitorOwner = post.authorId.equals(visitorId);
+      post.authorId = undefined;
       // console.log(visitorId);
       post.author = {
         username: post.author.username,
@@ -171,14 +172,28 @@ Post.delete = function(postIdToDelete, currentUserId) {
   return new Promise(async (resolve, reject) => {
     try {
       let post = await Post.findSingleById(postIdToDelete, currentUserId);
-      if(post.isVisitorOwner){
-        await postsCollection.deleteOne({_id: new ObjectID(postIdToDelete)})
-        resolve()
-      }else{
-        reject()
+      if (post.isVisitorOwner) {
+        await postsCollection.deleteOne({ _id: new ObjectID(postIdToDelete) });
+        resolve();
+      } else {
+        reject();
       }
     } catch {
-      reject()
+      reject();
+    }
+  });
+};
+
+Post.search = function(searchTerm) {
+  return new Promise(async (resolve, reject) => {
+    if (typeof searchTerm == "string") {
+      let posts = await Post.reusablePostQuery([
+        { $match: { $text: { $search: searchTerm } } },
+        { $sort: { score: { $meta: "textScore" } } }
+      ]);
+      resolve(posts);
+    } else {
+      reject();
     }
   });
 };

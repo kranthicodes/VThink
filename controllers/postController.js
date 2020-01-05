@@ -95,8 +95,16 @@ exports.delete = function(req, res) {
     })
     .catch(() => {
       req.flash("errors", "You don't have permission to perform this action.");
-      req.session.save(() =>
-        res.redirect(``)
-      );
+      req.session.save(() => res.redirect(``));
+    });
+};
+
+exports.search = function(req, res) {
+  Post.search(req.body.searchTerm)
+    .then(posts => {
+      res.json(posts);
+    })
+    .catch(() => {
+      res.json([]);
     });
 };
