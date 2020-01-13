@@ -1,37 +1,37 @@
 const postsCollection = require("../db")
   .db()
   .collection("posts");
-const followsCollection = require("../db")
-  .db()
-  .collection("follows");
 const ObjectID = require("mongodb").ObjectID;
 const User = require("./User");
 const sanitizeHTML = require("sanitize-html");
 
-let Post = function(data, userId, requestedPostId) {
+let Post = function(data, userid, requestedPostId) {
   this.data = data;
   this.errors = [];
-  this.userId = userId;
+  this.userid = userid;
   this.requestedPostId = requestedPostId;
 };
 
 Post.prototype.cleanUp = function() {
-  if (typeof this.data.title != "string" || typeof this.data.body != "string") {
+  if (typeof this.data.title != "string") {
     this.data.title = "";
+  }
+  if (typeof this.data.body != "string") {
     this.data.body = "";
   }
-  //get rid of any bogus props
+
+  // get rid of any bogus properties
   this.data = {
     title: sanitizeHTML(this.data.title.trim(), {
       allowedTags: [],
-      allowedAttributes: []
+      allowedAttributes: {}
     }),
     body: sanitizeHTML(this.data.body.trim(), {
       allowedTags: [],
-      allowedAttributes: []
+      allowedAttributes: {}
     }),
     createdDate: new Date(),
-    author: ObjectID(this.userId)
+    author: ObjectID(this.userid)
   };
 };
 
@@ -40,7 +40,7 @@ Post.prototype.validate = function() {
     this.errors.push("You must provide a title.");
   }
   if (this.data.body == "") {
-    this.errors.push("You must provide a post content.");
+    this.errors.push("You must provide post content.");
   }
 };
 
@@ -49,11 +49,11 @@ Post.prototype.create = function() {
     this.cleanUp();
     this.validate();
     if (!this.errors.length) {
-      //Save post into database
+      // save post into database
       postsCollection
         .insertOne(this.data)
-        .then(doc => {
-          resolve(doc.ops[0]._id);
+        .then(info => {
+          resolve(info.ops[0]._id);
         })
         .catch(() => {
           this.errors.push("Please try again later.");
@@ -64,12 +64,13 @@ Post.prototype.create = function() {
     }
   });
 };
+
 Post.prototype.update = function() {
   return new Promise(async (resolve, reject) => {
     try {
-      let post = await Post.findSingleById(this.requestedPostId, this.userId);
+      let post = await Post.findSingleById(this.requestedPostId, this.userid);
       if (post.isVisitorOwner) {
-        //update the db
+        // actually update the db
         let status = await this.actuallyUpdate();
         resolve(status);
       } else {
@@ -87,15 +88,8 @@ Post.prototype.actuallyUpdate = function() {
     this.validate();
     if (!this.errors.length) {
       await postsCollection.findOneAndUpdate(
-        {
-          _id: new ObjectID(this.requestedPostId)
-        },
-        {
-          $set: {
-            title: this.data.title,
-            body: this.data.body
-          }
-        }
+        { _id: new ObjectID(this.requestedPostId) },
+        { $set: { title: this.data.title, body: this.data.body } }
       );
       resolve("success");
     } else {
@@ -103,10 +97,10 @@ Post.prototype.actuallyUpdate = function() {
     }
   });
 };
+
 Post.reusablePostQuery = function(uniqueOperations, visitorId) {
-  console.log(visitorId + "<-reusuableQ");
-  return new Promise(async (resolve, reject) => {
-    let staticAgg = [
+  return new Promise(async function(resolve, reject) {
+    let aggOperations = uniqueOperations.concat([
       {
         $lookup: {
           from: "users",
@@ -124,50 +118,52 @@ Post.reusablePostQuery = function(uniqueOperations, visitorId) {
           author: { $arrayElemAt: ["$authorDocument", 0] }
         }
       }
-    ];
-    let aggOperations = uniqueOperations.concat(staticAgg);
+    ]);
+
     let posts = await postsCollection.aggregate(aggOperations).toArray();
-    //clean up author property in each post object
-    posts = posts.map(post => {
+
+    // clean up author property in each post object
+    posts = posts.map(function(post) {
       post.isVisitorOwner = post.authorId.equals(visitorId);
       post.authorId = post.isVisitorOwner ? visitorId : undefined;
-      // console.log(visitorId);
+
       post.author = {
         username: post.author.username,
         avatar: new User(post.author, true).avatar
       };
+
       return post;
     });
+
     resolve(posts);
   });
 };
 
 Post.findSingleById = function(id, visitorId) {
-  console.log(visitorId + "<-findsinglebyid");
-  return new Promise(async (resolve, reject) => {
+  return new Promise(async function(resolve, reject) {
     if (typeof id != "string" || !ObjectID.isValid(id)) {
-      reject("");
+      reject();
       return;
     }
+
     let posts = await Post.reusablePostQuery(
       [{ $match: { _id: new ObjectID(id) } }],
       visitorId
     );
+
     if (posts.length) {
-      // console.log(posts);
+      console.log(posts[0]);
       resolve(posts[0]);
     } else {
-      reject("Something went wrong");
+      reject();
     }
   });
 };
 
-Post.findByAuthorId = authorId => {
+Post.findByAuthorId = function(authorId) {
   return Post.reusablePostQuery([
     { $match: { author: authorId } },
-    {
-      $sort: { createdDate: 1 }
-    }
+    { $sort: { createdDate: -1 } }
   ]);
 };
 
@@ -199,33 +195,6 @@ Post.search = function(searchTerm) {
       reject();
     }
   });
-};
-
-Post.countPostsByAuthor = function(id) {
-  return new Promise(async (resolve, reject) => {
-    try {
-      let postCount = await postsCollection.countDocuments({ author: id });
-      resolve(postCount);
-    } catch {
-      reject("Something went wrong");
-    }
-  });
-};
-
-Post.getFeed = async function(id) {
-  //Create an array of the user id of current user follows
-  let followedUsers = await followsCollection
-    .find({ authorId: new ObjectID(id) })
-    .toArray();
-  followedUsers = followedUsers.map(user => {
-    return user.followedId;
-  });
-
-  //look for posts where the author is in the above array of followed user
-  return Post.reusablePostQuery([
-    { $match: { author: { $in: followedUsers } } },
-    { $sort: { createdDate: -1 } }
-  ]);
 };
 
 module.exports = Post;

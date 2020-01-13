@@ -29,7 +29,7 @@ exports.viewSingle = async function(req, res) {
   try {
     let post = await Post.findSingleById(req.params.id, req.visitorId);
     // console.log(post.title);
-    res.render("post-screen", { post: post });
+    res.render("post-screen", { post: post, title: post.title });
   } catch {
     res.render("404");
   }
@@ -38,6 +38,8 @@ exports.viewSingle = async function(req, res) {
 exports.viewEditScreen = async (req, res) => {
   try {
     let post = await Post.findSingleById(req.params.id, req.visitorId);
+    console.log(post);
+    console.log(req.visitorId + " Visitor id");
     if (post.authorId == req.visitorId) {
       res.render("edit-post", { post: post });
     } else {
